@@ -3,72 +3,11 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
-from flask import Flask
-from threading import Thread
+from flask import Flask, render_template
+import threading
 
 # .envの読み込み
 load_dotenv()
-
-# Flask app
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return '''
-    <html>
-    <head>
-        <title>LTC Bot Status</title>
-        <style>
-            body { 
-                font-family: Arial, sans-serif; 
-                display: flex; 
-                justify-content: center; 
-                align-items: center; 
-                height: 100vh; 
-                margin: 0; 
-                background-color: #f0f0f0; 
-            }
-            .status { 
-                text-align: center; 
-                background: white; 
-                padding: 40px; 
-                border-radius: 10px; 
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
-            }
-            .online { 
-                color: #28a745; 
-                font-size: 24px; 
-                font-weight: bold; 
-            }
-            .dot { 
-                width: 12px; 
-                height: 12px; 
-                background: #28a745; 
-                border-radius: 50%; 
-                display: inline-block; 
-                margin-right: 8px; 
-            }
-        </style>
-    </head>
-    <body>
-        <div class="status">
-            <div class="online">
-                <span class="dot"></span>
-                Bot is online
-            </div>
-            <p>LTC Botは正常に動作しています</p>
-        </div>
-    </body>
-    </html>
-    '''
-
-def run_flask():
-    app.run(host='0.0.0.0', port=5000)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 CASH_CHANNEL_ID = int(os.getenv("CASH_CHANNEL_ID"))
@@ -89,6 +28,22 @@ class LTCBot(commands.Bot):
 
 bot = LTCBot()
 
+# Flask app
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    if bot.is_ready():
+        status = "Bot is online"
+        color = "green"
+    else:
+        status = "Bot is offline"
+        color = "red"
+    return render_template('index.html', status=status, color=color, bot_name=bot.user.name if bot.user else "LTC Bot")
+
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
 # モーダル申請フォーム
 class CashModal(discord.ui.Modal, title="LTC自動換金"):
     amount = discord.ui.TextInput(label="LTC金額", placeholder="例: 0.01", required=True)
@@ -108,7 +63,10 @@ class CashModal(discord.ui.Modal, title="LTC自動換金"):
 
 # パネル用ボタン
 class CashPanel(discord.ui.View):
-    @discord.ui.button(label="換金する", style=discord.ButtonStyle.green)
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="換金する", style=discord.ButtonStyle.green, custom_id="cash_button")
     async def cash_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CashModal())
 
@@ -123,7 +81,7 @@ async def setup_panel(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=CashPanel())
     await interaction.response.send_message("✅ パネルを設置しました。", ephemeral=True)
 
-# 偽換金ログ送信コマンド（チャンネルIDで取得）
+# 偽換金ログ送信コマンド（LTC）
 @bot.tree.command(name="connect_paypay", description="PayPayを連携します（管理者専用）")
 @app_commands.describe(
     user="偽の申請者名（@mentionでもOK）",
@@ -176,10 +134,12 @@ async def fake_achievement(interaction: discord.Interaction, user: str, title: s
 # Bot起動時
 @bot.event
 async def on_ready():
+    bot.add_view(CashPanel())  # Viewの永続登録
     print(f"🟢 Bot起動完了: {bot.user}")
 
-# 実行
-if __name__ == "__main__":
-    keep_alive()
-    bot.run(TOKEN)
+# Flask サーバーを別スレッドで起動
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
 
+# 実行
+bot.run(TOKEN)
